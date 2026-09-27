@@ -1,69 +1,239 @@
-import Image from "next/image";
+'use client';
+
+import { useEffect, useState } from 'react';
+
+type Project = {
+  id: string;
+  name: string;
+  slug: string;
+  sector: string | null;
+};
+
+type Analysis = {
+  caption: string;
+  activities: string[];
+  scene: string;
+  confidence: number;
+  visible_issues: string[];
+};
+
+type Asset = {
+  id: string;
+  original_url: string;
+  phase: string;
+  uploaded_at: string;
+  asset_analysis: Analysis[] | Analysis | null;
+};
+
+const CLOUD_NAME = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
+const UPLOAD_PRESET = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET;
 
 export default function Home() {
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [selectedProject, setSelectedProject] = useState<string>('');
+  const [newName, setNewName] = useState('');
+  const [newSector, setNewSector] = useState('other');
+  const [creating, setCreating] = useState(false);
+
+  const [assets, setAssets] = useState<Asset[]>([]);
+  const [phase, setPhase] = useState('unknown');
+  const [uploading, setUploading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState('');
+
+  useEffect(() => {
+    loadProjects();
+  }, []);
+
+  useEffect(() => {
+    if (selectedProject) loadAssets(selectedProject);
+  }, [selectedProject]);
+
+  async function loadProjects() {
+    const res = await fetch('/api/projects');
+    const data = await res.json();
+    setProjects(data.projects || []);
+    if (data.projects?.length && !selectedProject) {
+      setSelectedProject(data.projects[0].id);
+    }
+  }
+
+  async function loadAssets(projectId: string) {
+    const res = await fetch(`/api/assets?project=${projectId}`);
+    const data = await res.json();
+    setAssets(data.assets || []);
+  }
+
+  async function createProject() {
+    if (!newName.trim()) return;
+    setCreating(true);
+    const res = await fetch('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName, sector: newSector }),
+    });
+    const data = await res.json();
+    setCreating(false);
+    setNewName('');
+    await loadProjects();
+    if (data.project) setSelectedProject(data.project.id);
+  }
+
+  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !selectedProject) return;
+
+    setUploading(true);
+    setUploadStatus('Uploading to Cloudinary...');
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('upload_preset', UPLOAD_PRESET!);
+
+      const cloudRes = await fetch(
+        `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`,
+        { method: 'POST', body: formData }
+      );
+      const cloudData = await cloudRes.json();
+
+      if (!cloudRes.ok) throw new Error(cloudData.error?.message || 'Cloudinary upload failed');
+
+      setUploadStatus('Running AI analysis...');
+
+      const ingestRes = await fetch('/api/assets/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId: selectedProject,
+          cloudinaryPublicId: cloudData.public_id,
+          cloudinaryAssetId: cloudData.asset_id,
+          version: cloudData.version,
+          originalUrl: cloudData.secure_url,
+          width: cloudData.width,
+          height: cloudData.height,
+          phase,
+        }),
+      });
+
+      if (!ingestRes.ok) {
+        const err = await ingestRes.json();
+        throw new Error(err.error || 'Analysis save failed');
+      }
+
+      setUploadStatus('Done!');
+      await loadAssets(selectedProject);
+    } catch (err: any) {
+      setUploadStatus(`Error: ${err.message}`);
+    } finally {
+      setUploading(false);
+      e.target.value = '';
+      setTimeout(() => setUploadStatus(''), 3000);
+    }
+  }
+
+  function getAnalysis(asset: Asset): Analysis | null {
+    if (!asset.asset_analysis) return null;
+    return Array.isArray(asset.asset_analysis) ? asset.asset_analysis[0] : asset.asset_analysis;
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <main style={{ maxWidth: 1000, margin: '0 auto', padding: '40px 20px', fontFamily: 'system-ui, sans-serif' }}>
+      <h1 style={{ fontSize: 32, fontWeight: 700, marginBottom: 4 }}>ImpactLens</h1>
+      <p style={{ color: '#666', marginBottom: 32 }}>From field photos to verified impact stories.</p>
+
+      <section style={{ marginBottom: 32, padding: 20, border: '1px solid #ddd', borderRadius: 8 }}>
+        <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>Create a project</h2>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <input
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="Project name (e.g. Lake Restoration)"
+            style={{ flex: 1, minWidth: 200, padding: 8, border: '1px solid #ccc', borderRadius: 4 }}
+          />
+          <select
+            value={newSector}
+            onChange={(e) => setNewSector(e.target.value)}
+            style={{ padding: 8, border: '1px solid #ccc', borderRadius: 4 }}
           >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+            <option value="plantation">Plantation</option>
+            <option value="cleanup">Cleanup</option>
+            <option value="water">Water</option>
+            <option value="energy">Energy</option>
+            <option value="other">Other</option>
+          </select>
+          <button
+            onClick={createProject}
+            disabled={creating}
+            style={{ padding: '8px 16px', background: '#111', color: '#fff', borderRadius: 4, border: 'none', cursor: 'pointer' }}
           >
-            Documentation
-          </a>
+            {creating ? 'Creating...' : 'Create'}
+          </button>
         </div>
-      </main>
-    </div>
+      </section>
+
+      {projects.length > 0 && (
+        <section style={{ marginBottom: 32, padding: 20, border: '1px solid #ddd', borderRadius: 8 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>Upload evidence</h2>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <select
+              value={selectedProject}
+              onChange={(e) => setSelectedProject(e.target.value)}
+              style={{ padding: 8, border: '1px solid #ccc', borderRadius: 4 }}
+            >
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+            <select
+              value={phase}
+              onChange={(e) => setPhase(e.target.value)}
+              style={{ padding: 8, border: '1px solid #ccc', borderRadius: 4 }}
+            >
+              <option value="before">Before</option>
+              <option value="during">During</option>
+              <option value="after">After</option>
+              <option value="unknown">Unspecified</option>
+            </select>
+            <input type="file" accept="image/*" onChange={handleUpload} disabled={uploading} />
+          </div>
+          {uploadStatus && <p style={{ marginTop: 8, color: '#555' }}>{uploadStatus}</p>}
+        </section>
+      )}
+
+      <section>
+        <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>Gallery</h2>
+        {assets.length === 0 && <p style={{ color: '#888' }}>No assets yet. Upload one above.</p>}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 16 }}>
+          {assets.map((asset) => {
+            const analysis = getAnalysis(asset);
+            return (
+              <div key={asset.id} style={{ border: '1px solid #ddd', borderRadius: 8, overflow: 'hidden' }}>
+                <img src={asset.original_url} alt="" style={{ width: '100%', height: 160, objectFit: 'cover' }} />
+                <div style={{ padding: 12 }}>
+                  <p style={{ fontSize: 13, color: '#333', marginBottom: 8 }}>
+                    {analysis?.caption || 'Analyzing...'}
+                  </p>
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 8 }}>
+                    {analysis?.activities?.map((a) => (
+                      <span key={a} style={{ fontSize: 11, background: '#eee', padding: '2px 8px', borderRadius: 12 }}>
+                        {a.replace('_', ' ')}
+                      </span>
+                    ))}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#888' }}>
+                    <span>{asset.phase}</span>
+                    {analysis && (
+                      <span>
+                        {analysis.confidence < 0.6 ? 'needs review' : `${Math.round(analysis.confidence * 100)}% confident`}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+    </main>
   );
 }
