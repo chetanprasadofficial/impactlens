@@ -38,3 +38,9 @@ export async function analyzeImage(imageUrl: string) {
   const cleaned = text.replace(/```json|```/g, '').trim();
   return JSON.parse(cleaned);
 }
+
+export async function embedText(text: string): Promise<number[]> {
+  const model = genAI.getGenerativeModel({ model: 'gemini-embedding-2' });
+  const result = await model.embedContent(text);
+  return result.embedding.values;
+}

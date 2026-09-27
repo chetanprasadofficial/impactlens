@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import { analyzeImage } from '@/lib/gemini';
+import { analyzeImage, embedText } from '@/lib/gemini';
 
 export async function POST(req: NextRequest) {
   try {
@@ -54,6 +54,20 @@ export async function POST(req: NextRequest) {
       };
     }
 
+    let embedding: number[] | null = null;
+    try {
+      const embedInput = [
+        analysis.caption,
+        analysis.scene,
+        ...(analysis.activities || []),
+        ...(analysis.visible_issues || []),
+        ...(analysis.objects || []),
+      ].join(' ');
+      embedding = await embedText(embedInput);
+    } catch (e) {
+      embedding = null;
+    }
+
     const { error: analysisError } = await supabase.from('asset_analysis').insert({
       asset_id: assetId,
       caption: analysis.caption,
@@ -64,6 +78,7 @@ export async function POST(req: NextRequest) {
       estimated_counts: analysis.estimated_counts,
       confidence: analysis.confidence,
       tags: analysis.activities,
+      embedding: embedding,
       model: 'gemini-3.1-flash-lite',
       prompt_version: 'v1',
     });

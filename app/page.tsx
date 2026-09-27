@@ -25,6 +25,13 @@ type Asset = {
   asset_analysis: Analysis[] | Analysis | null;
 };
 
+type SearchResult = {
+  asset: Asset;
+  analysis: Analysis | null;
+  score: number;
+  matchedBecause: string;
+};
+
 const CLOUD_NAME = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
 const UPLOAD_PRESET = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET;
 
@@ -40,12 +47,22 @@ export default function Home() {
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState('');
 
+  const [filterPhase, setFilterPhase] = useState('all');
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<SearchResult[] | null>(null);
+  const [searching, setSearching] = useState(false);
+
   useEffect(() => {
     loadProjects();
   }, []);
 
   useEffect(() => {
-    if (selectedProject) loadAssets(selectedProject);
+    if (selectedProject) {
+      loadAssets(selectedProject);
+      setSearchResults(null);
+      setSearchQuery('');
+    }
   }, [selectedProject]);
 
   async function loadProjects() {
@@ -131,9 +148,69 @@ export default function Home() {
     }
   }
 
+  async function handleSearch() {
+    if (!searchQuery.trim()) {
+      setSearchResults(null);
+      return;
+    }
+    setSearching(true);
+    try {
+      const res = await fetch('/api/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: searchQuery, projectId: selectedProject }),
+      });
+      const data = await res.json();
+      setSearchResults(data.results || []);
+    } catch (err) {
+      setSearchResults([]);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  function clearSearch() {
+    setSearchQuery('');
+    setSearchResults(null);
+  }
+
   function getAnalysis(asset: Asset): Analysis | null {
     if (!asset.asset_analysis) return null;
     return Array.isArray(asset.asset_analysis) ? asset.asset_analysis[0] : asset.asset_analysis;
+  }
+
+  const filteredAssets =
+    filterPhase === 'all' ? assets : assets.filter((a) => a.phase === filterPhase);
+
+  function renderCard(asset: Asset, analysis: Analysis | null, matchedBecause?: string) {
+    return (
+      <div key={asset.id} style={{ border: '1px solid #ddd', borderRadius: 8, overflow: 'hidden' }}>
+        <img src={asset.original_url} alt="" style={{ width: '100%', height: 160, objectFit: 'cover' }} />
+        <div style={{ padding: 12 }}>
+          <p style={{ fontSize: 13, color: '#333', marginBottom: 8 }}>
+            {analysis?.caption || 'Analyzing...'}
+          </p>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 8 }}>
+            {analysis?.activities?.map((a) => (
+              <span key={a} style={{ fontSize: 11, background: '#eee', padding: '2px 8px', borderRadius: 12 }}>
+                {a.replace('_', ' ')}
+              </span>
+            ))}
+          </div>
+          {matchedBecause && (
+            <p style={{ fontSize: 11, color: '#0a7', marginBottom: 8 }}>Matched: {matchedBecause}</p>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#888' }}>
+            <span>{asset.phase}</span>
+            {analysis && (
+              <span>
+                {analysis.confidence < 0.6 ? 'needs review' : `${Math.round(analysis.confidence * 100)}% confident`}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -200,39 +277,71 @@ export default function Home() {
         </section>
       )}
 
+      {projects.length > 0 && (
+        <section style={{ marginBottom: 32, padding: 20, border: '1px solid #ddd', borderRadius: 8 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>Search evidence</h2>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+              placeholder="e.g. flooded streets, planted saplings, murky water"
+              style={{ flex: 1, padding: 8, border: '1px solid #ccc', borderRadius: 4 }}
+            />
+            <button
+              onClick={handleSearch}
+              disabled={searching}
+              style={{ padding: '8px 16px', background: '#111', color: '#fff', borderRadius: 4, border: 'none', cursor: 'pointer' }}
+            >
+              {searching ? 'Searching...' : 'Search'}
+            </button>
+            {searchResults !== null && (
+              <button
+                onClick={clearSearch}
+                style={{ padding: '8px 16px', background: '#eee', borderRadius: 4, border: 'none', cursor: 'pointer' }}
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        </section>
+      )}
+
       <section>
-        <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>Gallery</h2>
-        {assets.length === 0 && <p style={{ color: '#888' }}>No assets yet. Upload one above.</p>}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 16 }}>
-          {assets.map((asset) => {
-            const analysis = getAnalysis(asset);
-            return (
-              <div key={asset.id} style={{ border: '1px solid #ddd', borderRadius: 8, overflow: 'hidden' }}>
-                <img src={asset.original_url} alt="" style={{ width: '100%', height: 160, objectFit: 'cover' }} />
-                <div style={{ padding: 12 }}>
-                  <p style={{ fontSize: 13, color: '#333', marginBottom: 8 }}>
-                    {analysis?.caption || 'Analyzing...'}
-                  </p>
-                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 8 }}>
-                    {analysis?.activities?.map((a) => (
-                      <span key={a} style={{ fontSize: 11, background: '#eee', padding: '2px 8px', borderRadius: 12 }}>
-                        {a.replace('_', ' ')}
-                      </span>
-                    ))}
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#888' }}>
-                    <span>{asset.phase}</span>
-                    {analysis && (
-                      <span>
-                        {analysis.confidence < 0.6 ? 'needs review' : `${Math.round(analysis.confidence * 100)}% confident`}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 600 }}>
+            {searchResults !== null ? `Search results (${searchResults.length})` : 'Gallery'}
+          </h2>
+          {searchResults === null && (
+            <select
+              value={filterPhase}
+              onChange={(e) => setFilterPhase(e.target.value)}
+              style={{ padding: 6, border: '1px solid #ccc', borderRadius: 4, fontSize: 13 }}
+            >
+              <option value="all">All phases</option>
+              <option value="before">Before</option>
+              <option value="during">During</option>
+              <option value="after">After</option>
+              <option value="unknown">Unspecified</option>
+            </select>
+          )}
         </div>
+
+        {searchResults !== null ? (
+          <>
+            {searchResults.length === 0 && <p style={{ color: '#888' }}>No matches found.</p>}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 16 }}>
+              {searchResults.map((r) => renderCard(r.asset, r.analysis, r.matchedBecause))}
+            </div>
+          </>
+        ) : (
+          <>
+            {filteredAssets.length === 0 && <p style={{ color: '#888' }}>No assets yet. Upload one above.</p>}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 16 }}>
+              {filteredAssets.map((asset) => renderCard(asset, getAnalysis(asset)))}
+            </div>
+          </>
+        )}
       </section>
     </main>
   );
