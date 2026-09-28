@@ -62,14 +62,14 @@ export async function POST(req: NextRequest) {
       if (queryEmbedding && analysis.embedding && Array.isArray(analysis.embedding)) {
         const sim = cosineSimilarity(queryEmbedding, analysis.embedding);
         score += sim;
-        if (sim > 0.4 && !matchedBecause) matchedBecause = 'meaning match';
+        if (sim > 0.47 && !matchedBecause) matchedBecause = 'meaning match';
       }
 
       return { asset, analysis, score, matchedBecause };
     });
 
     const results = scored
-      .filter((r: any) => r.score >= 0.1)
+      .filter((r: any) => r.matchedBecause !== '')
       .sort((a: any, b: any) => b.score - a.score)
       .slice(0, 20);
 

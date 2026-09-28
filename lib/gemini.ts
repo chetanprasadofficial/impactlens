@@ -44,3 +44,30 @@ export async function embedText(text: string): Promise<number[]> {
   const result = await model.embedContent(text);
   return result.embedding.values;
 }
+
+export async function compareImages(beforeUrl: string, afterUrl: string) {
+  const model = genAI.getGenerativeModel({ model: 'gemini-3.1-flash-lite' });
+
+  const [beforeResp, afterResp] = await Promise.all([fetch(beforeUrl), fetch(afterUrl)]);
+  const [beforeBuf, afterBuf] = await Promise.all([
+    beforeResp.arrayBuffer(),
+    afterResp.arrayBuffer(),
+  ]);
+  const beforeB64 = Buffer.from(beforeBuf).toString('base64');
+  const afterB64 = Buffer.from(afterBuf).toString('base64');
+
+  const prompt = `You are comparing a "before" and "after" photo of the same field project.
+List 3-5 visible differences as short bullet points, only describing what you can actually see.
+Return ONLY valid JSON, no markdown:
+{"changes": ["...", "..."], "confidence": 0.0}`;
+
+  const result = await model.generateContent([
+    prompt,
+    { inlineData: { data: beforeB64, mimeType: 'image/jpeg' } },
+    { inlineData: { data: afterB64, mimeType: 'image/jpeg' } },
+  ]);
+
+  const text = result.response.text();
+  const cleaned = text.replace(/```json|```/g, '').trim();
+  return JSON.parse(cleaned);
+}
