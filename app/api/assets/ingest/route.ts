@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import { analyzeImage, embedText } from '@/lib/gemini';
-
+import { analyzeImage, embedText, MODEL_NAME, PROMPT_VERSION } from '@/lib/gemini';
+import { mirrorAssetToCloudinary } from '@/lib/cloudinary-mirror';
+   export const maxDuration = 60;
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -102,8 +103,8 @@ export async function POST(req: NextRequest) {
       confidence: analysis.confidence,
       tags: analysis.activities,
       embedding: embedding,
-      model: 'gemini-3.1-flash-lite',
-      prompt_version: 'v1',
+      model: MODEL_NAME,
+      prompt_version: PROMPT_VERSION,
     });
 
     if (analysisError) throw analysisError;
@@ -113,12 +114,44 @@ export async function POST(req: NextRequest) {
       entity_id: assetId,
       action: 'upload',
       details: {
-        model: 'gemini-3.1-flash-lite',
+        model: MODEL_NAME,
+        prompt_version: PROMPT_VERSION,
         confidence: analysis.confidence,
         location_name: cleanLocation,
         captured_at: capturedIso,
       },
     });
+
+    // Mirror tags and context into Cloudinary (never blocks the upload)
+    try {
+      const { data: project } = await supabase
+        .from('projects')
+        .select('slug')
+        .eq('id', projectId)
+        .single();
+
+      const mirror = await mirrorAssetToCloudinary({
+        publicId: cloudinaryPublicId,
+        assetId,
+        projectSlug: project?.slug,
+        phase: phase || 'unknown',
+        activities: analysis.activities,
+        scene: analysis.scene,
+        locationName: cleanLocation,
+        capturedAt: capturedIso,
+        model: MODEL_NAME,
+        promptVersion: PROMPT_VERSION,
+      });
+
+      await supabase.from('audit_events').insert({
+        entity_type: 'asset',
+        entity_id: assetId,
+        action: 'mirror',
+        details: { target: 'cloudinary tags + context', ok: mirror.ok, error: mirror.error || null },
+      });
+    } catch (e) {
+      // ignore: mirroring is best effort
+    }
 
     return NextResponse.json({ asset, analysis });
   } catch (error: any) {
