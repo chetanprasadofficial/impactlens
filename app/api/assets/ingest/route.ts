@@ -16,6 +16,10 @@ export async function POST(req: NextRequest) {
       phase,
     } = body;
 
+    if (new URL(originalUrl).hostname !== 'res.cloudinary.com') {
+      return NextResponse.json({ error: 'Invalid image URL' }, { status: 400 });
+    }
+
     const assetId = `A-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
     const { data: asset, error: assetError } = await supabase
