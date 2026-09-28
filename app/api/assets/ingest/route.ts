@@ -14,10 +14,24 @@ export async function POST(req: NextRequest) {
       width,
       height,
       phase,
+      locationName,
+      capturedAt,
     } = body;
 
     if (new URL(originalUrl).hostname !== 'res.cloudinary.com') {
       return NextResponse.json({ error: 'Invalid image URL' }, { status: 400 });
+    }
+
+    // Clean the optional location and date fields
+    const cleanLocation =
+      typeof locationName === 'string' && locationName.trim()
+        ? locationName.trim().slice(0, 120)
+        : null;
+
+    let capturedIso: string | null = null;
+    if (typeof capturedAt === 'string' && capturedAt.trim()) {
+      const d = new Date(capturedAt);
+      if (!isNaN(d.getTime())) capturedIso = d.toISOString();
     }
 
     const assetId = `A-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -35,7 +49,9 @@ export async function POST(req: NextRequest) {
         width,
         height,
         phase: phase || 'unknown',
-        location_source: 'manual',
+        location_name: cleanLocation,
+        location_source: cleanLocation ? 'manual' : 'unknown',
+        captured_at: capturedIso,
       })
       .select()
       .single();
@@ -63,10 +79,13 @@ export async function POST(req: NextRequest) {
       const embedInput = [
         analysis.caption,
         analysis.scene,
+        cleanLocation,
         ...(analysis.activities || []),
         ...(analysis.visible_issues || []),
         ...(analysis.objects || []),
-      ].join(' ');
+      ]
+        .filter(Boolean)
+        .join(' ');
       embedding = await embedText(embedInput);
     } catch (e) {
       embedding = null;
@@ -93,7 +112,12 @@ export async function POST(req: NextRequest) {
       entity_type: 'asset',
       entity_id: assetId,
       action: 'upload',
-      details: { model: 'gemini-3.1-flash-lite', confidence: analysis.confidence },
+      details: {
+        model: 'gemini-3.1-flash-lite',
+        confidence: analysis.confidence,
+        location_name: cleanLocation,
+        captured_at: capturedIso,
+      },
     });
 
     return NextResponse.json({ asset, analysis });

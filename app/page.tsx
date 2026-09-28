@@ -25,6 +25,9 @@ type Asset = {
   cloudinary_public_id: string;
   cloudinary_asset_id: string;
   version: string;
+  verified?: boolean;
+  location_name?: string | null;
+  captured_at?: string | null;
   asset_analysis: Analysis[] | Analysis | null;
 };
 
@@ -80,6 +83,8 @@ export default function Home() {
 
   const [assets, setAssets] = useState<Asset[]>([]);
   const [phase, setPhase] = useState('unknown');
+  const [locationName, setLocationName] = useState('');
+  const [capturedDate, setCapturedDate] = useState('');
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState('');
 
@@ -196,6 +201,8 @@ export default function Home() {
           width: cloudData.width,
           height: cloudData.height,
           phase,
+          locationName,
+          capturedAt: capturedDate,
         }),
       });
 
@@ -287,12 +294,33 @@ export default function Home() {
     return Array.isArray(asset.asset_analysis) ? asset.asset_analysis[0] : asset.asset_analysis;
   }
 
+  async function toggleVerify(assetId: string, current: boolean) {
+    const next = !current;
+    try {
+      const res = await fetch(`/api/assets/${assetId}/verify`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ verified: next }),
+      });
+      if (!res.ok) return;
+      setAssets((prev) => prev.map((a) => (a.id === assetId ? { ...a, verified: next } : a)));
+      setSearchResults((prev) =>
+        prev
+          ? prev.map((r) =>
+              r.asset.id === assetId ? { ...r, asset: { ...r.asset, verified: next } } : r
+            )
+          : prev
+      );
+    } catch {}
+  }
+
   const filteredAssets =
     filterPhase === 'all' ? assets : assets.filter((a) => a.phase === filterPhase);
 
   const beforeAsset = assets.find((a) => a.id === compareBeforeId);
   const afterAsset = assets.find((a) => a.id === compareAfterId);
   const sameSelected = !!compareBeforeId && compareBeforeId === compareAfterId;
+  const selectedSlug = projects.find((p) => p.id === selectedProject)?.slug;
 
   function renderCard(asset: Asset, analysis: Analysis | null, matchedBecause?: string) {
     const isOpen = openProvenance === asset.id;
@@ -320,14 +348,37 @@ export default function Home() {
           {matchedBecause && (
             <p style={{ fontSize: 11, color: '#0a7', marginBottom: 8 }}>Matched: {matchedBecause}</p>
           )}
+          {(asset.location_name || asset.captured_at) && (
+            <p style={{ fontSize: 11, color: '#555', marginBottom: 8 }}>
+              {asset.location_name ? `📍 ${asset.location_name}` : ''}
+              {asset.location_name && asset.captured_at ? ' · ' : ''}
+              {asset.captured_at ? asset.captured_at.slice(0, 10) : ''}
+            </p>
+          )}
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#666', marginBottom: 8 }}>
-            <span>{asset.phase}</span>
+            <span>{asset.phase}{asset.verified ? ' · ✔ verified' : ''}</span>
             {analysis && (
               <span>
                 {analysis.confidence < 0.6 ? 'needs review' : `${Math.round(analysis.confidence * 100)}% confident`}
               </span>
             )}
           </div>
+          <button
+            onClick={() => toggleVerify(asset.id, !!asset.verified)}
+            style={{
+              fontSize: 11,
+              background: asset.verified ? '#e6f7ee' : '#fff',
+              color: '#111',
+              border: '1px solid #ccc',
+              borderRadius: 4,
+              padding: '4px 8px',
+              cursor: 'pointer',
+              width: '100%',
+              marginBottom: 6,
+            }}
+          >
+            {asset.verified ? '✔ Verified (click to undo)' : 'Verify this photo'}
+          </button>
           <button
             onClick={() => toggleProvenance(asset.id)}
             style={{
@@ -348,6 +399,8 @@ export default function Home() {
               <p><strong>Asset ID:</strong> {asset.id}</p>
               <p><strong>Cloudinary public ID:</strong> {asset.cloudinary_public_id}</p>
               <p><strong>Version:</strong> {asset.version}</p>
+              <p><strong>Location:</strong> {asset.location_name || 'unknown'}</p>
+              <p><strong>Captured:</strong> {asset.captured_at ? asset.captured_at.slice(0, 10) : 'not set'}</p>
               <p style={{ wordBreak: 'break-all' }}><strong>Original URL:</strong> {asset.original_url}</p>
               <p style={{ marginTop: 8 }}><strong>Audit trail:</strong></p>
               {loadingAudit ? (
@@ -408,7 +461,7 @@ export default function Home() {
       {projects.length > 0 && (
         <section style={sectionStyle}>
           <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>Upload evidence</h2>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
             <select value={selectedProject} onChange={(e) => setSelectedProject(e.target.value)} style={inputStyle}>
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>{p.name}</option>
@@ -420,9 +473,43 @@ export default function Home() {
               <option value="after">After</option>
               <option value="unknown">Unspecified</option>
             </select>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
+            <input
+              value={locationName}
+              onChange={(e) => setLocationName(e.target.value)}
+              placeholder="Location (e.g. Lake Road, Patna)"
+              style={{ ...inputStyle, flex: 1, minWidth: 200 }}
+            />
+            <label style={{ fontSize: 13, color: '#555' }}>
+              Date taken{' '}
+              <input
+                type="date"
+                value={capturedDate}
+                onChange={(e) => setCapturedDate(e.target.value)}
+                style={inputStyle}
+              />
+            </label>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             <input type="file" accept="image/*" onChange={handleUpload} disabled={uploading} />
           </div>
+          <p style={{ marginTop: 6, fontSize: 11, color: '#777' }}>
+            Fill in location and date before choosing a file. Both are optional.
+          </p>
           {uploadStatus && <p style={{ marginTop: 8, color: '#555' }}>{uploadStatus}</p>}
+          {selectedSlug && (
+            <p style={{ marginTop: 8, fontSize: 13 }}>
+              <a
+                href={`/report/${selectedSlug}`}
+                target="_blank"
+                rel="noreferrer"
+                style={{ color: '#06c', textDecoration: 'underline' }}
+              >
+                View impact report →
+              </a>
+            </p>
+          )}
         </section>
       )}
 
