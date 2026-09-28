@@ -27,6 +27,8 @@ export async function POST(
     } catch (e: any) {
       const msg = String(e?.message ?? e).slice(0, 500);
       console.error('reanalyze failed:', e);
+      // Nothing succeeded here, so there's no fallback-aware model name to
+      // report yet — MODEL_NAME (the primary model we attempted) is correct.
       await supabase.from('audit_events').insert({
         entity_type: 'asset',
         entity_id: id,
@@ -65,8 +67,13 @@ export async function POST(
         confidence: analysis.confidence,
         tags: analysis.activities,
         embedding,
-        model: MODEL_NAME,
-        prompt_version: PROMPT_VERSION,
+        // analysis.model / analysis.prompt_version reflect whichever model
+        // actually produced this result (primary or fallback) — analyzeImage()
+        // returns them per-call, so we save those instead of the static
+        // MODEL_NAME/PROMPT_VERSION constants, which would silently mislabel
+        // a fallback-produced analysis as having come from the primary model.
+        model: analysis.model,
+        prompt_version: analysis.prompt_version,
       })
       .eq('asset_id', id);
     if (updateError) throw updateError;
@@ -75,7 +82,11 @@ export async function POST(
       entity_type: 'asset',
       entity_id: id,
       action: 'reanalyze',
-      details: { model: MODEL_NAME, prompt_version: PROMPT_VERSION, confidence: analysis.confidence },
+      details: {
+        model: analysis.model,
+        prompt_version: analysis.prompt_version,
+        confidence: analysis.confidence,
+      },
     });
 
     try {
@@ -94,8 +105,8 @@ export async function POST(
         scene: analysis.scene,
         locationName: asset.location_name,
         capturedAt: asset.captured_at,
-        model: MODEL_NAME,
-        promptVersion: PROMPT_VERSION,
+        model: analysis.model,
+        promptVersion: analysis.prompt_version,
       });
 
       await supabase.from('audit_events').insert({

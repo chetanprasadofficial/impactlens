@@ -3,6 +3,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
 export const MODEL_NAME = 'gemini-3.1-flash-lite';
+export const FALLBACK_MODEL_NAME = 'gemini-3.8-flash'; // was gemini-3.5-flash — not on this key
 export const PROMPT_VERSION = 'v2';
 
 const ACTIVITIES = [
@@ -89,14 +90,41 @@ function cleanList(value: unknown): string[] {
     .map((v) => (v as string).trim().toLowerCase().replace(/\s+/g, '_'));
 }
 
+function isOverloaded(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes('503') || /overloaded|high demand/i.test(msg);
+}
+
+// Tries MODEL_NAME first; on a 503/overload error only, retries once against
+// FALLBACK_MODEL_NAME instead of hammering the same overloaded model.
+// Returns which model actually produced the result, so callers can record it.
+async function generateWithFallback(
+  parts: (string | { inlineData: { data: string; mimeType: string } })[],
+  temperature = 0.2
+): Promise<{ result: Awaited<ReturnType<ReturnType<typeof genAI.getGenerativeModel>['generateContent']>>; modelUsed: string }> {
+  const tryModel = (modelName: string) => {
+    const model = genAI.getGenerativeModel({
+      model: modelName,
+      generationConfig: { temperature },
+    });
+    return model.generateContent(parts);
+  };
+
+  try {
+    const result = await tryModel(MODEL_NAME);
+    return { result, modelUsed: MODEL_NAME };
+  } catch (err) {
+    if (!isOverloaded(err)) throw err;
+    console.warn(`${MODEL_NAME} overloaded, falling back to ${FALLBACK_MODEL_NAME}`);
+    const result = await tryModel(FALLBACK_MODEL_NAME);
+    return { result, modelUsed: FALLBACK_MODEL_NAME };
+  }
+}
+
 export async function analyzeImage(imageUrl: string) {
-  const model = genAI.getGenerativeModel({
-    model: MODEL_NAME,
-    generationConfig: { temperature: 0.2 },
-  });
   const img = await fetchImageBase64(imageUrl);
 
-  const result = await model.generateContent([
+  const { result, modelUsed } = await generateWithFallback([
     PROMPT_V2,
     { inlineData: { data: img.data, mimeType: img.mimeType } },
   ]);
@@ -130,6 +158,8 @@ export async function analyzeImage(imageUrl: string) {
       saplings: Number(counts.saplings) > 0 ? Math.round(Number(counts.saplings)) : 0,
     },
     confidence: clamp01(raw.confidence),
+    model: modelUsed,
+    prompt_version: PROMPT_VERSION,
   };
 }
 
@@ -140,10 +170,6 @@ export async function embedText(text: string): Promise<number[]> {
 }
 
 export async function compareImages(beforeUrl: string, afterUrl: string) {
-  const model = genAI.getGenerativeModel({
-    model: MODEL_NAME,
-    generationConfig: { temperature: 0.2 },
-  });
   const [before, after] = await Promise.all([
     fetchImageBase64(beforeUrl),
     fetchImageBase64(afterUrl),
@@ -154,7 +180,7 @@ List 3 to 5 visible differences as short sentences. Only describe what you can a
 If the two photos do not appear to show the same place or scene, make that the first item and lower the confidence.
 Return ONLY valid JSON, no markdown: {"changes": ["...", "..."], "confidence": 0.0}`;
 
-  const result = await model.generateContent([
+  const { result } = await generateWithFallback([
     prompt,
     { inlineData: { data: before.data, mimeType: before.mimeType } },
     { inlineData: { data: after.data, mimeType: after.mimeType } },

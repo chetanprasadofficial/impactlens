@@ -121,6 +121,10 @@ export default function Home() {
   const [loadingAudit, setLoadingAudit] = useState(false);
   const latestAudit = useRef('');
 
+  // Tracks which card's "Retry analysis" button is mid-flight, so we can
+  // disable just that one button and show "Retrying..." on it.
+  const [retryingId, setRetryingId] = useState<string | null>(null);
+
   useEffect(() => {
     loadProjects();
   }, []);
@@ -313,6 +317,34 @@ export default function Home() {
     return Array.isArray(asset.asset_analysis) ? asset.asset_analysis[0] : asset.asset_analysis;
   }
 
+  // A card is "pending" if it has no analysis row yet, or if a previous
+  // analysis attempt failed and left this placeholder caption behind.
+  function isAnalysisPending(analysis: Analysis | null): boolean {
+    return !analysis || analysis.caption === 'Analysis pending - retry needed';
+  }
+
+  // Calls the real reanalyze route: POST /api/assets/[id]/reanalyze.
+  // That route re-runs analyzeImage() (with the gemini.ts fallback logic),
+  // saves the new analysis over the old row, logs a "reanalyze" audit event,
+  // and returns { ok: true, analysis } — just the new analysis object, not
+  // the whole asset. So we merge it into asset_analysis on our side.
+  async function retryAnalysis(assetId: string) {
+    setRetryingId(assetId);
+    try {
+      const res = await fetch(`/api/assets/${assetId}/reanalyze`, { method: 'POST' });
+      if (!res.ok) throw new Error('Retry failed');
+      const data = await res.json();
+      setAssets((prev) =>
+        prev.map((a) => (a.id === assetId ? { ...a, asset_analysis: data.analysis } : a))
+      );
+    } catch {
+      // Leave the card in its pending state; the button stays clickable so
+      // the person can just try again.
+    } finally {
+      setRetryingId(null);
+    }
+  }
+
   async function toggleVerify(assetId: string, current: boolean) {
     const next = !current;
     try {
@@ -402,6 +434,7 @@ export default function Home() {
 
   function renderCard(asset: Asset, analysis: Analysis | null, matchedBecause?: string) {
     const isOpen = openProvenance === asset.id;
+    const pending = isAnalysisPending(analysis);
     return (
       <div
         key={asset.id}
@@ -441,6 +474,26 @@ export default function Home() {
               </span>
             )}
           </div>
+          {pending && (
+            <button
+              onClick={() => retryAnalysis(asset.id)}
+              disabled={retryingId === asset.id}
+              style={{
+                fontSize: 11,
+                background: '#fff5f0',
+                color: '#111',
+                border: '1px solid #c60',
+                borderRadius: 4,
+                padding: '4px 8px',
+                cursor: retryingId === asset.id ? 'default' : 'pointer',
+                width: '100%',
+                marginBottom: 6,
+                opacity: retryingId === asset.id ? 0.6 : 1,
+              }}
+            >
+              {retryingId === asset.id ? 'Retrying...' : '↻ Retry analysis'}
+            </button>
+          )}
           <button
             onClick={() => toggleVerify(asset.id, !!asset.verified)}
             style={{
