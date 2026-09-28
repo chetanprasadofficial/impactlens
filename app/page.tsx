@@ -15,6 +15,8 @@ type Analysis = {
   scene: string;
   confidence: number;
   visible_issues: string[];
+  model?: string;
+  prompt_version?: string;
 };
 
 type Asset = {
@@ -47,6 +49,15 @@ type AuditEvent = {
 
 const CLOUD_NAME = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
 const UPLOAD_PRESET = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET;
+
+// Cloudinary transformation strings (the original image is never changed)
+const THUMB_T = 'c_fill,g_auto,w_480,h_320,q_auto,f_auto';
+const COMPARE_T = 'c_fill,g_auto,w_1200,h_640,q_auto,f_auto';
+
+function cld(url: string, transformation: string): string {
+  if (!url || !url.includes('/upload/')) return url;
+  return url.replace('/upload/', `/upload/${transformation}/`);
+}
 
 const inputStyle = {
   padding: 8,
@@ -89,6 +100,10 @@ export default function Home() {
   const [uploadStatus, setUploadStatus] = useState('');
 
   const [filterPhase, setFilterPhase] = useState('all');
+  const [filterTag, setFilterTag] = useState('all');
+  const [filterVerified, setFilterVerified] = useState('all');
+  const [filterFrom, setFilterFrom] = useState('');
+  const [filterTo, setFilterTo] = useState('');
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[] | null>(null);
@@ -120,6 +135,10 @@ export default function Home() {
       setCompareBeforeId('');
       setCompareAfterId('');
       setFilterPhase('all');
+      setFilterTag('all');
+      setFilterVerified('all');
+      setFilterFrom('');
+      setFilterTo('');
       setOpenProvenance(null);
     }
   }, [selectedProject]);
@@ -314,8 +333,67 @@ export default function Home() {
     } catch {}
   }
 
-  const filteredAssets =
-    filterPhase === 'all' ? assets : assets.filter((a) => a.phase === filterPhase);
+  const dateOf = (a: Asset) => (a.captured_at || a.uploaded_at || '').slice(0, 10);
+
+  function assetTags(a: Asset): string[] {
+    const an = getAnalysis(a);
+    if (!an) return [];
+    return [...(an.activities || []), ...(an.visible_issues || []), an.scene].filter(Boolean);
+  }
+
+  const tagOptions = Array.from(new Set(assets.flatMap((a) => assetTags(a)))).sort();
+
+  const filteredAssets = assets.filter((a) => {
+    if (filterPhase !== 'all' && a.phase !== filterPhase) return false;
+    if (filterTag !== 'all' && !assetTags(a).includes(filterTag)) return false;
+    if (filterVerified === 'verified' && !a.verified) return false;
+    if (filterVerified === 'unverified' && a.verified) return false;
+    const d = dateOf(a);
+    if (filterFrom && d < filterFrom) return false;
+    if (filterTo && d > filterTo) return false;
+    return true;
+  });
+
+  const filtersActive =
+    filterPhase !== 'all' ||
+    filterTag !== 'all' ||
+    filterVerified !== 'all' ||
+    !!filterFrom ||
+    !!filterTo;
+
+  function clearFilters() {
+    setFilterPhase('all');
+    setFilterTag('all');
+    setFilterVerified('all');
+    setFilterFrom('');
+    setFilterTo('');
+  }
+
+  // Suggested before/after pairs: earliest "before" matched with an "after"
+  // (same location if both have one, otherwise the earliest before).
+  const suggestedPairs = (() => {
+    const befores = assets
+      .filter((a) => a.phase === 'before')
+      .sort((x, y) => dateOf(x).localeCompare(dateOf(y)));
+    const afters = assets
+      .filter((a) => a.phase === 'after')
+      .sort((x, y) => dateOf(y).localeCompare(dateOf(x)));
+    const pairs: { before: Asset; after: Asset; reason: string }[] = [];
+    const usedBefore = new Set<string>();
+    for (const after of afters) {
+      let match = after.location_name
+        ? befores.find((b) => b.location_name === after.location_name && !usedBefore.has(b.id))
+        : undefined;
+      let reason = match ? `same location: ${after.location_name}` : 'earliest before photo';
+      if (!match) match = befores.find((b) => !usedBefore.has(b.id)) || befores[0];
+      if (match) {
+        usedBefore.add(match.id);
+        pairs.push({ before: match, after, reason });
+      }
+      if (pairs.length >= 3) break;
+    }
+    return pairs;
+  })();
 
   const beforeAsset = assets.find((a) => a.id === compareBeforeId);
   const afterAsset = assets.find((a) => a.id === compareAfterId);
@@ -330,7 +408,7 @@ export default function Home() {
         style={{ border: '1px solid #ddd', borderRadius: 8, overflow: 'hidden', background: '#fff', color: '#111' }}
       >
         <img
-          src={asset.original_url}
+          src={cld(asset.original_url, THUMB_T)}
           alt={analysis?.caption || 'Uploaded evidence photo'}
           style={{ width: '100%', height: 160, objectFit: 'cover' }}
         />
@@ -401,7 +479,22 @@ export default function Home() {
               <p><strong>Version:</strong> {asset.version}</p>
               <p><strong>Location:</strong> {asset.location_name || 'unknown'}</p>
               <p><strong>Captured:</strong> {asset.captured_at ? asset.captured_at.slice(0, 10) : 'not set'}</p>
-              <p style={{ wordBreak: 'break-all' }}><strong>Original URL:</strong> {asset.original_url}</p>
+              {analysis?.model && (
+                <p>
+                  <strong>AI model:</strong> {analysis.model}
+                  {analysis.prompt_version ? ` (prompt ${analysis.prompt_version})` : ''}
+                </p>
+              )}
+              <p style={{ wordBreak: 'break-all' }}><strong>Original URL (untouched):</strong> {asset.original_url}</p>
+              <p style={{ wordBreak: 'break-all' }}>
+                <strong>Thumbnail transformation:</strong> {THUMB_T}
+              </p>
+              <p style={{ wordBreak: 'break-all' }}>
+                <strong>Thumbnail URL:</strong> {cld(asset.original_url, THUMB_T)}
+              </p>
+              <p style={{ wordBreak: 'break-all' }}>
+                <strong>Compare-view transformation:</strong> {COMPARE_T}
+              </p>
               <p style={{ marginTop: 8 }}><strong>Audit trail:</strong></p>
               {loadingAudit ? (
                 <p>Loading...</p>
@@ -542,6 +635,38 @@ export default function Home() {
       {assets.length >= 2 && (
         <section style={sectionStyle}>
           <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>Compare before &amp; after</h2>
+
+          {suggestedPairs.length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              <p style={{ fontSize: 12, color: '#555', marginBottom: 6 }}>Suggested pairs:</p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {suggestedPairs.map((p) => (
+                  <button
+                    key={`${p.before.id}-${p.after.id}`}
+                    onClick={() => {
+                      setCompareBeforeId(p.before.id);
+                      setCompareAfterId(p.after.id);
+                      setCompareResult(null);
+                      setCompareError('');
+                    }}
+                    style={{
+                      textAlign: 'left',
+                      fontSize: 12,
+                      background: '#f7f7f7',
+                      color: '#111',
+                      border: '1px solid #ddd',
+                      borderRadius: 4,
+                      padding: '6px 10px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {p.before.id} → {p.after.id} <span style={{ color: '#777' }}>({p.reason})</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
             <select
               value={compareBeforeId}
@@ -605,7 +730,7 @@ export default function Home() {
                 }}
               >
                 <img
-                  src={afterAsset.original_url}
+                  src={cld(afterAsset.original_url, COMPARE_T)}
                   alt="After"
                   style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover' }}
                 />
@@ -620,7 +745,7 @@ export default function Home() {
                   }}
                 >
                   <img
-                    src={beforeAsset.original_url}
+                    src={cld(beforeAsset.original_url, COMPARE_T)}
                     alt="Before"
                     style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                   />
@@ -650,10 +775,10 @@ export default function Home() {
                   }}
                 />
                 <span style={{ position: 'absolute', top: 8, left: 8, background: '#000a', color: '#fff', fontSize: 11, padding: '2px 8px', borderRadius: 4 }}>
-                  BEFORE
+                  BEFORE · {dateOf(beforeAsset)}
                 </span>
                 <span style={{ position: 'absolute', top: 8, right: 8, background: '#000a', color: '#fff', fontSize: 11, padding: '2px 8px', borderRadius: 4 }}>
-                  AFTER
+                  AFTER · {dateOf(afterAsset)}
                 </span>
               </div>
               <input
@@ -665,7 +790,7 @@ export default function Home() {
                 style={{ width: '100%', maxWidth: 600, marginTop: 8 }}
               />
               <p style={{ fontSize: 11, color: '#666' }}>
-                Before: {compareBeforeId} · After: {compareAfterId}
+                Before: {compareBeforeId} · After: {compareAfterId} · both shown with the same Cloudinary crop ({COMPARE_T})
               </p>
             </div>
           )}
@@ -673,7 +798,7 @@ export default function Home() {
           {compareResult && (
             <div style={{ padding: 12, background: '#f7f7f7', color: '#111', borderRadius: 4 }}>
               <p style={{ fontWeight: 600, marginBottom: 8, fontSize: 13 }}>
-                AI change summary ({Math.round(compareResult.confidence * 100)}% confident):
+                AI-generated change summary ({Math.round(compareResult.confidence * 100)}% confident):
               </p>
               <ul style={{ paddingLeft: 20, fontSize: 13, color: '#222' }}>
                 {compareResult.changes.map((c, i) => (
@@ -688,9 +813,14 @@ export default function Home() {
       <section>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <h2 style={{ fontSize: 18, fontWeight: 600, color: '#111' }}>
-            {searchResults !== null ? `Search results (${searchResults.length})` : 'Gallery'}
+            {searchResults !== null
+              ? `Search results (${searchResults.length})`
+              : `Gallery (${filteredAssets.length}${filtersActive ? ` of ${assets.length}` : ''})`}
           </h2>
-          {searchResults === null && (
+        </div>
+
+        {searchResults === null && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 16 }}>
             <select
               value={filterPhase}
               onChange={(e) => setFilterPhase(e.target.value)}
@@ -702,8 +832,53 @@ export default function Home() {
               <option value="after">After</option>
               <option value="unknown">Unspecified</option>
             </select>
-          )}
-        </div>
+            <select
+              value={filterTag}
+              onChange={(e) => setFilterTag(e.target.value)}
+              style={{ ...inputStyle, padding: 6, fontSize: 13 }}
+            >
+              <option value="all">All tags</option>
+              {tagOptions.map((t) => (
+                <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
+              ))}
+            </select>
+            <select
+              value={filterVerified}
+              onChange={(e) => setFilterVerified(e.target.value)}
+              style={{ ...inputStyle, padding: 6, fontSize: 13 }}
+            >
+              <option value="all">Verified + unverified</option>
+              <option value="verified">Verified only</option>
+              <option value="unverified">Unverified only</option>
+            </select>
+            <label style={{ fontSize: 12, color: '#555' }}>
+              From{' '}
+              <input
+                type="date"
+                value={filterFrom}
+                onChange={(e) => setFilterFrom(e.target.value)}
+                style={{ ...inputStyle, padding: 5, fontSize: 12 }}
+              />
+            </label>
+            <label style={{ fontSize: 12, color: '#555' }}>
+              To{' '}
+              <input
+                type="date"
+                value={filterTo}
+                onChange={(e) => setFilterTo(e.target.value)}
+                style={{ ...inputStyle, padding: 5, fontSize: 12 }}
+              />
+            </label>
+            {filtersActive && (
+              <button
+                onClick={clearFilters}
+                style={{ fontSize: 12, background: '#eee', color: '#111', border: 'none', borderRadius: 4, padding: '6px 10px', cursor: 'pointer' }}
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
+        )}
 
         {searchResults !== null ? (
           <>
@@ -714,7 +889,10 @@ export default function Home() {
           </>
         ) : (
           <>
-            {filteredAssets.length === 0 && <p style={{ color: '#666' }}>No assets yet. Upload one above.</p>}
+            {assets.length === 0 && <p style={{ color: '#666' }}>No assets yet. Upload one above.</p>}
+            {assets.length > 0 && filteredAssets.length === 0 && (
+              <p style={{ color: '#666' }}>No photos match these filters.</p>
+            )}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 16 }}>
               {filteredAssets.map((asset) => renderCard(asset, getAnalysis(asset)))}
             </div>
