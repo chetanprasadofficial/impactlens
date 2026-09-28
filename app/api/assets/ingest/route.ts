@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { analyzeImage, embedText, MODEL_NAME, PROMPT_VERSION } from '@/lib/gemini';
 import { mirrorAssetToCloudinary } from '@/lib/cloudinary-mirror';
-   export const maxDuration = 60;
+import { withRetry } from '@/lib/retry';
+
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -23,7 +26,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid image URL' }, { status: 400 });
     }
 
-    // Clean the optional location and date fields
     const cleanLocation =
       typeof locationName === 'string' && locationName.trim()
         ? locationName.trim().slice(0, 120)
@@ -59,10 +61,14 @@ export async function POST(req: NextRequest) {
 
     if (assetError) throw assetError;
 
+    // Analysis: retry temporary Gemini errors, and record the reason if it still fails
     let analysis;
+    let analysisFailure: string | null = null;
     try {
-      analysis = await analyzeImage(originalUrl);
-    } catch (e) {
+      analysis = await withRetry(() => analyzeImage(originalUrl));
+    } catch (e: any) {
+      analysisFailure = String(e?.message ?? e).slice(0, 500);
+      console.error('analyzeImage failed:', e);
       analysis = {
         caption: 'Analysis pending - retry needed',
         activities: [],
@@ -75,21 +81,25 @@ export async function POST(req: NextRequest) {
       };
     }
 
+    // Skip the embedding for failed analyses so placeholder text doesn't pollute search
     let embedding: number[] | null = null;
-    try {
-      const embedInput = [
-        analysis.caption,
-        analysis.scene,
-        cleanLocation,
-        ...(analysis.activities || []),
-        ...(analysis.visible_issues || []),
-        ...(analysis.objects || []),
-      ]
-        .filter(Boolean)
-        .join(' ');
-      embedding = await embedText(embedInput);
-    } catch (e) {
-      embedding = null;
+    if (!analysisFailure) {
+      try {
+        const embedInput = [
+          analysis.caption,
+          analysis.scene,
+          cleanLocation,
+          ...(analysis.activities || []),
+          ...(analysis.visible_issues || []),
+          ...(analysis.objects || []),
+        ]
+          .filter(Boolean)
+          .join(' ');
+        embedding = await withRetry(() => embedText(embedInput), 3, 1000);
+      } catch (e) {
+        console.error('embedText failed:', e);
+        embedding = null;
+      }
     }
 
     const { error: analysisError } = await supabase.from('asset_analysis').insert({
@@ -122,6 +132,15 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    if (analysisFailure) {
+      await supabase.from('audit_events').insert({
+        entity_type: 'asset',
+        entity_id: assetId,
+        action: 'analysis_failed',
+        details: { model: MODEL_NAME, error: analysisFailure },
+      });
+    }
+
     // Mirror tags and context into Cloudinary (never blocks the upload)
     try {
       const { data: project } = await supabase
@@ -150,11 +169,12 @@ export async function POST(req: NextRequest) {
         details: { target: 'cloudinary tags + context', ok: mirror.ok, error: mirror.error || null },
       });
     } catch (e) {
-      // ignore: mirroring is best effort
+      console.error('mirror failed:', e);
     }
 
     return NextResponse.json({ asset, analysis });
   } catch (error: any) {
+    console.error('ingest failed:', error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
