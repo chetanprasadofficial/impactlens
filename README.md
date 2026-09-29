@@ -34,7 +34,7 @@ ImpactLens helps sustainability and community-project teams turn a folder of fie
 
 1. **Clone the repo**
    ```bash
-   git clone https://github.com/<your-username>/impactlens.git
+   git clone https://github.com/chetanprasadofficial/impactlens.git
    cd impactlens
    ```
 
